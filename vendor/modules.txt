@@ -1,0 +1,19 @@
+# github.com/drgrib/alfred v0.0.0-20180713231015-cbcb1a4b1a30
+## explicit
+github.com/drgrib/alfred
+# github.com/mattn/go-sqlite3 v1.14.9
+## explicit; go 1.12
+github.com/mattn/go-sqlite3
+# github.com/pkg/errors v0.9.1
+## explicit
+github.com/pkg/errors
+# github.com/smartystreets/assertions v1.1.1
+## explicit; go 1.13
+github.com/smartystreets/assertions
+github.com/smartystreets/assertions/internal/go-diff/diffmatchpatch
+github.com/smartystreets/assertions/internal/go-render/render
+github.com/smartystreets/assertions/internal/oglematchers
+# golang.org/x/text v0.3.8
+## explicit; go 1.17
+golang.org/x/text/transform
+golang.org/x/text/unicode/norm

@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/atotto/clipboard"
 	"github.com/drgrib/alfred"
 	"github.com/pkg/errors"
 	"golang.org/x/text/unicode/norm"
@@ -42,10 +41,15 @@ func getUniqueTagString(tagString string) string {
 	}
 	tags := strings.Split(tagString, ",")
 	uniqueTags := []string{}
+	seen := make(map[string]bool, len(tags))
 	for _, t := range tags {
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
 		isPrefix := false
 		for _, other := range tags {
-			if t != other && strings.HasPrefix(other, t) {
+			if strings.HasPrefix(other, t+"/") {
 				isPrefix = true
 				break
 			}
@@ -64,9 +68,10 @@ func getUniqueTagString(tagString string) string {
 
 func RowToItem(row db.Note, query Query) alfred.Item {
 	searchCallbackString := getSearchCallbackString(query)
+	subtitle := getUniqueTagString(row[db.TagsKey])
 	return alfred.Item{
 		Title:    row[db.TitleKey],
-		Subtitle: getUniqueTagString(row[db.TagsKey]),
+		Subtitle: subtitle,
 		Arg: strings.Join([]string{
 			row[db.NoteIDKey],
 			searchCallbackString,
@@ -105,6 +110,16 @@ func ParseQuery(arg string) Query {
 	tagStarted := false
 	for _, t := range query.Tokens {
 		switch {
+		case len(t) > 2 && strings.HasPrefix(t, "#") && strings.HasSuffix(t, "#"):
+			// A complete single-token tag starts a new tag, even after an
+			// unfinished tag and ordinary search words.
+			if tagStarted {
+				query.Tags = append(query.Tags, buffer[0])
+				words = append(words, buffer[1:]...)
+				buffer = nil
+				tagStarted = false
+			}
+			query.Tags = append(query.Tags, t)
 		case strings.HasSuffix(t, "#"):
 			if tagStarted {
 				// Add the token to the buffer and record tag.
@@ -201,7 +216,7 @@ func AutocompleteSpecial(litedb db.LiteDB, query Query) (bool, error) {
 
 func AutocompleteTags(litedb db.LiteDB, query Query) (bool, error) {
 	if strings.HasPrefix(query.LastToken, "#") {
-		rows, err := litedb.Query(fmt.Sprintf(db.TAGS_BY_TITLE, db.RemoveTagHashes(query.LastToken)))
+		rows, err := litedb.QueryTagsByTitle(db.RemoveTagHashes(query.LastToken))
 		if err != nil {
 			return false, err
 		}
@@ -222,10 +237,6 @@ func AutocompleteTags(litedb db.LiteDB, query Query) (bool, error) {
 		return true, nil
 	}
 	return false, nil
-}
-
-func escape(s string) string {
-	return strings.Replace(s, "'", "''", -1)
 }
 
 func GetSearchRows(litedb db.LiteDB, query Query) ([]db.Note, error) {
@@ -253,52 +264,15 @@ func GetSearchRows(litedb db.LiteDB, query Query) ([]db.Note, error) {
 	}
 }
 
-func GetCreateItem(query Query) (*alfred.Item, error) {
-	callback := []string{}
-	if query.WordString != "" {
-		callback = append(callback, "title="+url.PathEscape(query.WordString))
-	}
-	if len(query.Tags) != 0 {
-		bareTags := []string{}
-		for _, t := range query.Tags {
-			bareTags = append(bareTags, url.PathEscape(db.RemoveTagHashes(t)))
-		}
-		callback = append(callback, "tags="+strings.Join(bareTags, ","))
-	}
-
-	clipString, err := clipboard.ReadAll()
-	if err != nil {
-		return nil, err
-	}
-	if clipString != "" {
-		callback = append(callback, "text="+url.PathEscape(clipString))
-	}
-	callbackString := strings.Join(callback, "&")
-
-	title := fmt.Sprintf("Create %q", query.WordString)
-	if strings.Contains(title, `\"`) {
-		title = fmt.Sprintf("Create '%s'", query.WordString)
-	}
-	item := alfred.Item{
-		Title: title,
-		Arg:   callbackString,
-		Valid: alfred.Bool(true),
-	}
-	if len(query.Tags) != 0 {
-		item.Subtitle = strings.Join(query.Tags, " ")
-	}
-	return &item, nil
-}
-
 func getSearchCallbackString(query Query) string {
 	callback := []string{}
 
 	if query.WordString != "" {
-		callback = append(callback, "term="+url.PathEscape(query.WordString))
+		callback = append(callback, "term="+url.QueryEscape(query.WordString))
 	}
 
 	if len(query.Tags) != 0 {
-		callback = append(callback, "tag="+db.RemoveTagHashes(query.Tags[0]))
+		callback = append(callback, "tag="+url.QueryEscape(db.RemoveTagHashes(query.Tags[0])))
 	}
 
 	return strings.Join(callback, "&")

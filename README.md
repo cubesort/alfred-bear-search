@@ -1,156 +1,182 @@
-[![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/donate?business=N2GLXLS5KBFBY&item_name=Chris+Redford&currency_code=USD)
+# Bear for Alfred
 
-# Bear Workflow
+Search and open Bear notes from Alfred. Find notes by title, body text, tags, or
+attachment text already indexed by Bear, with results shown directly in Alfred.
 
-Streamlined note searching and creation for [Bear](http://www.bear-writer.com/) using [Alfred](https://www.alfredapp.com/workflows/).
+A search-focused fork of [drgrib/alfred-bear](https://github.com/drgrib/alfred-bear),
+originally created by Chris Redford.
 
-## Install
+## Requirements
 
-1. [Download](https://github.com/drgrib/alfred-bear/releases/latest/download/Bear.alfredworkflow) the latest release and double-click _Bear.alfredworkflow_. Alfred will open the workflow and install it.
-2. [Authorize all the executables used by the workflow](#authorize-all-executables).
+- macOS with Bear installed and a local note database.
+- [Alfred with the Powerpack](https://www.alfredapp.com/powerpack/), which enables workflows.
+- To build from source: [Go](https://go.dev/dl/) 1.21 or newer and Apple's Command Line Tools.
 
-If you are on an Intel Mac, use [this](https://github.com/drgrib/alfred-bear/releases/download/v1.2.4/Bear.alfredworkflow) download link for the last Intel-compatible version.
+## Installation
 
-If you are using an old version of Bear before 2.0 use [this](https://github.com/drgrib/alfred-bear/releases/download/1.1.9/Bear.alfredworkflow) download link for the latest version supporting it.
+If you already have a built `.alfredworkflow` file, double-click it to import it
+into Alfred. Go and the Command Line Tools are needed only when building.
 
-## Search
+To build from source:
 
-`bs` or `bsearch`
+1. Clone or download this repository.
+2. Install Go and, if needed, Apple's Command Line Tools:
 
-### Recent Notes
+   ```sh
+   xcode-select --install
+   ```
 
-Leave the search field empty to see recent notes with their tags as subtitles.
+3. From the repository directory, run:
 
-<img src="doc/RecentNotes.png" width="500">
+   ```sh
+   bash build-macos.command
+   ```
 
-### Basic Search
+4. Open `dist/Bear.alfredworkflow` to import it into Alfred.
 
-Start typing to search through the titles and text of most recent notes, title matches first.
+The script runs the tests, builds the search executable for the installed Go
+toolchain's Mac architecture, and packages the workflow. Dependencies are vendored,
+so the build does not need to download Go modules.
 
-<img src="doc/BasicSearch.png" width="500">
+## Usage
 
-### Tag Search
+Open Alfred and type `b`, followed by a space and your search. Leave the query
+empty to see recent notes.
 
-Type `#` at any time to autocomplete your tags.
+| Action | Result |
+| --- | --- |
+| Return | Open the selected note in Bear's main window |
+| Command-Return | Open the selected note in a new window |
+| Option-Return | Search the query in Bear |
 
-<img src="doc/TagAutocomplete.png" width="500">
+Change the keyword or configure the Hotkey object in Alfred's workflow editor.
 
-Start typing to search tags.
+### Search examples
 
-<img src="doc/TagAutocompleteSearch.png" width="500">
+| Input | Finds |
+| --- | --- |
+| `b budget` | Notes containing `budget` |
+| `b budget launch` | Notes containing both terms |
+| `b "project launch"` | Notes containing the phrase `project launch` |
+| `b budget #work` | Notes containing `budget` with the `work` tag |
+| `b #work #planning` | Notes with both tags |
+| `b #meeting notes#` | Notes with the multiword tag `meeting notes` |
 
-Once completed, the notes will be filtered by that tag.
+Typing `#` starts tag autocomplete. Add a space after the final tag to leave
+autocomplete and display matching notes. Single-word tags accept either `#work`
+or `#work#`; multiword tags need the closing `#`.
 
-<img src="doc/TagFilter.png" width="500">
+### Matching and ranking
 
-Add more tags to filter by multiple tags.
+All search terms and tags must match. Different terms can occur in different
+fields of the same note, including its indexed attachments. Archived and trashed
+notes are excluded.
 
-<img src="doc/TagAutocompleteMultiple.png" width="500">
+Results are ranked by:
 
-Start typing to search titles and text within a tag.
+1. The full search phrase appearing in the title.
+2. All search terms appearing in the title in query order.
+3. All search terms appearing anywhere in the title.
+4. Most recently modified notes.
 
-<img src="doc/TagTextSearch.png" width="500">
+Matching and ranking happen before the **25-result limit**. Recent notes and tag
+autocomplete are also limited to 25 items. Alfred displays the workflow's results
+without applying an additional text filter.
 
-All these terms can be typed in any order and they will work the same. For example, if you want to add a tag after typing a bare search term, the autocomplete will still help you. Or if you remember you want to filter by another tag after typing the first tag and a bare search term, you can autocomplete and add the second tag by typing `#` again.
+Subtitles show tags only. Duplicate tags appear once, and parent tags are hidden
+when a child is present: `#work` and `#work/project` display as `#work/project`.
+Unrelated tags such as `#work` and `#workshop` both remain visible.
 
-<img src="doc/TagAnyOrder.png" width="500">
+### Search details
 
-### Search in Bear App
+- Apostrophes are literal characters, so `O'Reilly` remains one search term.
+- `%` and `_` retain SQL wildcard behavior: `%` matches any sequence of characters,
+  and `_` matches one character.
+- Bear-specific operators such as `@todo` are not interpreted by the local search.
+  Use Option-Return to run a query in Bear.
+- Search in Bear passes the text query and the first selected tag. Local searches
+  apply every selected tag.
+- Attachment searches use text already indexed by Bear; the workflow does not
+  extract attachment text or perform OCR itself.
 
-You can search any _query_ you type in the Bear app's main window by holding down the option key. If you've entered a tag, it will open the Bear main window to that tag for further browsing.
+## Customization and updates
 
-<img src="doc/SearchQueryInBearApp.png" width="500">
+Alfred objects, connections, keywords, hotkeys, and workflow metadata are stored
+in `workflow-template/info.plist`. The icon is `workflow-template/icon.png`.
 
-### Open Note in Bear App
+After editing the installed workflow in Alfred, export it and extract its
+`info.plist` into `workflow-template/info.plist` to preserve those settings in
+future builds. An `.alfredworkflow` file is a ZIP archive.
 
-Similarly, you can open any _note_ you select in the Bear app's main window by holding down the command key.
+To update only the search implementation while keeping your installed workflow
+settings, build the workflow and replace `cmd/search/search` in the installed
+workflow folder with the executable from the new archive. Preserve its executable
+permission.
 
-### Link Pasting
+## Troubleshooting
 
-While in your Bear notes, you can paste a link to another note by searching for it and holding down the shift key.
+### The build cannot find `errno.h`, `stdlib.h`, or `pthread.h`
 
-<img src="doc/Link1.png" width="500">
-<img src="doc/Link2.png" width="500">
+The SQLite driver uses cgo and needs Apple's compiler and macOS SDK. The build
+script selects the SDK explicitly and checks its headers before compiling.
 
-### Table of Contents Pasting
-
-Similarly, you can paste a table of contents for a note by searching for it and holding down the command and shift keys.
-
-## New Notes
-
-`bn` or `bnew` followed by title and optional tags.
-
-<img src="doc/NewNote.png" width="500">
-
-Tag autocomplete works the same. Also, any text in your clipboard can be added to the new note by holding down the command key.
-
-## Create/Search
-
-`bcs` or `bcsearch`
-
-You may find sometimes that you want to retrieve a note if it exists and create it if it does not. This command provides that functionality by combining the behavior of search and create. It will provide all the same search results as normal search and additionally add a create item third in the list using normal create options.
-
-<img src="doc/CreateSearch1.png" width="500">
-
-If there are less than two search items, the create item will be the last or only item.
-
-<img src="doc/CreateSearch2.png" width="500">
-
-You can additionally create links to notes by holding the shift key while selecting a search item. Selecting the create item while holding the shift key will do nothing.
-
-## Why I created this
-
-I am especially grateful to Chris Brown, who created a [Python based Bear workflow](https://github.com/chrisbro/alfred-bear). It was the basis for this project. However, I decided to create my own project for a few reasons:
-
--   Compiled Go is faster than interpretted Python. Not that much faster but fast enough for me to notice when searching and creating notes throughout the day.
--   I wanted the features involving tag searching and autocompletion, link pasting, and automatic clipboard note content.
--   I wanted fewer, more optimized SQL queries into the Bear database to increase speed since this appears to be the main bottleneck on performance.
-
-## Authorization
-
-The first time you use the workflow after installing or upgrading, you will see a security warning:
-
-<img src="doc/Authorize.png" width="400">
-
-This is a quirk of macOS 10.15 and above. Apple currently forces developers to pay $99 a year to be able to officially sign their executables and avoid this warning, which I'm not going to pay since I'm providing this workflow for free as an open source project.
-
-After seeing this warning, you have to go to **System Preferences > Security & Privacy > General** and click the new button that has appeared to allow the executable to run. You then have to run it again and you will see this security warning _again_ but now it will have a new button that lets you allow the executable to run.
-
-These warnings will appear once for each of the executables inside the workflow as you use new features. Once you have authorized all of them, you won't see these warnings anymore until you install a new version.
-
-### Authorize All Executables
-
-If you want to authorize all Bear Workflow executables at once or if you do not see the above security warnings but the workflow isn't working, you can do the following:
-
-1. Go to the **Workflows** section in Alfred Preferences
-2. Right click on **Bear** _by drgrib_ and select **Open in Terminal**
-3. Copy this command and execute it:
-
-```
-xattr -rd com.apple.quarantine cmd
-```
-
-This should authorize all the Alfred Bear the executables and fix the security errors.
-
-If you are trying to use the Bear workflow loaded from prefrences via cloud (e.g. through Google Drive) on a new Mac, you may also need to run this command, which will make the executables executable:
-```
-find . -mindepth 3 -maxdepth 3 -type f \! -name "*.go" -exec chmod +x {} \;
-```
-
-## Install Rosetta
-
-> Note: `v1.2.5` and later run natively on Apple Silicon and do not require Rosetta. The steps below only apply to `v1.2.4` and earlier.
-
-If your mac is based on an Apple Silicon chip (M1, M2, etc.), you need to have Rosetta installed on your system, otherwise Alfred workflows will fail silently.
-
-Copy this command and execute in terminal to install Rosetta:
+Inspect the active developer tools:
 
 ```sh
-softwareupdate --install-rosetta
+xcode-select -p
+xcrun --sdk macosx --show-sdk-path
 ```
 
-If that fails, try this version, which requires your admin password:
+Install or update the Command Line Tools, or select a complete Xcode installation,
+then rerun `bash build-macos.command`.
 
+### Alfred shows “Unable to search Bear notes”
+
+Open Bear and confirm that its notes are available locally. Then open Alfred's
+workflow debugger and repeat the search to see the database error.
+
+The workflow reads Bear's database at:
+
+```text
+~/Library/Group Containers/9K33E3U3T4.net.shinyfrog.bear/Application Data/database.sqlite
 ```
-sudo softwareupdate --install-rosetta --agree-to-license
+
+Search opens this database read-only. The workflow depends on Bear's internal
+database schema; a Bear update that changes the schema may require a code update.
+
+## Development
+
+| Path | Purpose |
+| --- | --- |
+| `cmd/search/` | Search executable and error output |
+| `core/` | Query parsing, tag formatting, and Alfred results |
+| `db/` | SQLite access, matching, ranking, tests, and benchmarks |
+| `workflow-template/` | Alfred configuration and assets |
+| `vendor/` | Go dependencies and their licenses |
+| `build-macos.command` | Native Mac build and workflow packaging |
+
+Run the tests and static checks:
+
+```sh
+go test -mod=vendor ./... -count=1
+go vet -mod=vendor ./...
 ```
+
+Tests use synthetic SQLite databases and do not require access to personal Bear
+notes. They cover matching before the result limit, ranking, tags, phrases,
+attachments, URL encoding, read-only access, and error handling.
+
+Run the search benchmark:
+
+```sh
+go test -mod=vendor ./db -run '^$' -bench BenchmarkSearchPatterns -benchmem -benchtime=300ms -count=3
+```
+
+Use `-bench BenchmarkResultCap` to compare result limits. Benchmarks use synthetic
+data and exclude Alfred, process startup, and real-database disk I/O; measure on
+your Mac when evaluating performance changes.
+
+## License
+
+[MIT](LICENSE). Original work copyright © 2024 Chris Redford.
+Third-party dependencies retain their respective licenses in `vendor/`.

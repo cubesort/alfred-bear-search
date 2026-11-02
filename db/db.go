@@ -1,29 +1,29 @@
 package db
 
 import (
-	"bytes"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os/user"
 	"path/filepath"
-	"regexp"
-	"sort"
 	"strings"
-	"text/template"
+	"sync"
 
 	"github.com/mattn/go-sqlite3"
 	"github.com/pkg/errors"
 )
 
 const (
-	DbPath = "~/Library/Group Containers/9K33E3U3T4.net.shinyfrog.bear/Application Data/database.sqlite"
-
+	DbPath    = "~/Library/Group Containers/9K33E3U3T4.net.shinyfrog.bear/Application Data/database.sqlite"
 	TitleKey  = "ZTITLE"
 	TextKey   = "ZTEXT"
 	TagsKey   = "TAGS"
 	NoteIDKey = "ZUNIQUEIDENTIFIER"
+)
 
-	RECENT_NOTES = `
+// Keep all list caps tied to the same search limit.
+var (
+	RECENT_NOTES = fmt.Sprintf(`
 SELECT
     note.ZUNIQUEIDENTIFIER,
     note.ZTITLE,
@@ -41,97 +41,10 @@ GROUP BY
     note.ZUNIQUEIDENTIFIER,
     note.ZTITLE
 ORDER BY
-    note.ZMODIFICATIONDATE DESC
-LIMIT 25
-	`
-
-	NOTES_BY_QUERY = `
-SELECT
-    note.ZUNIQUEIDENTIFIER,
-    note.ZTITLE,
-    GROUP_CONCAT(tag.ZTITLE) AS TAGS
-FROM
-    ZSFNOTE note
-LEFT JOIN
-    Z_5TAGS nTag ON note.Z_PK = nTag.Z_5NOTES
-LEFT JOIN
-    ZSFNOTETAG tag ON nTag.Z_13TAGS = tag.Z_PK
-WHERE
-	note.ZUNIQUEIDENTIFIER IN (
-		SELECT
-			note.ZUNIQUEIDENTIFIER
-		FROM
-			ZSFNOTE note
-		LEFT JOIN
-			ZSFNOTEFILE images ON images.ZNOTE = note.Z_PK
-		WHERE
-			note.ZARCHIVED = 0
-			AND note.ZTRASHED = 0
-			AND note.ZTEXT IS NOT NULL
-			AND (
-				utflower(note.ZTITLE) LIKE utflower('%'||$1||'%') OR
-				utflower(note.ZTEXT) LIKE utflower('%'||$1||'%') OR
-				images.ZSEARCHTEXT LIKE utflower('%'||$1||'%')
-			)
-	)
-GROUP BY
-    note.ZUNIQUEIDENTIFIER,
-    note.ZTITLE
-ORDER BY
-    CASE WHEN utflower(note.ZTITLE) LIKE utflower('%'||$1||'%') THEN 0 ELSE 1 END,
-    note.ZMODIFICATIONDATE DESC
-LIMIT 200
-`
-
-	NOTES_BY_TAGS_AND_QUERY = `
-WITH 
-	joined AS (
-		SELECT
-			note.ZUNIQUEIDENTIFIER,
-			note.ZTITLE,
-			note.ZTEXT,
-			note.ZMODIFICATIONDATE,
-			tag.ZTITLE AS TAG_TITLE,
-			images.ZSEARCHTEXT
-		FROM
-			ZSFNOTE note
-		INNER JOIN
-			Z_5TAGS nTag ON note.Z_PK = nTag.Z_5NOTES
-		INNER JOIN
-			ZSFNOTETAG tag ON nTag.Z_13TAGS = tag.Z_PK
-		LEFT JOIN
-			ZSFNOTEFILE images ON images.ZNOTE = note.Z_PK
-		WHERE
-			note.ZARCHIVED = 0
-			AND note.ZTRASHED = 0
-			AND note.ZTEXT IS NOT NULL
-	),
-	hasSearchedTags AS (
-		{{ .TagIntersection}}
-	)
-SELECT
-	ZUNIQUEIDENTIFIER,
-	ZTITLE,
-	GROUP_CONCAT(DISTINCT TAG_TITLE) AS TAGS
-FROM
-	joined
-WHERE
-	ZUNIQUEIDENTIFIER IN hasSearchedTags 
-	AND (
-		utflower(ZTITLE) LIKE utflower('%{{ .Text}}%') OR
-		utflower(ZTEXT) LIKE utflower('%{{ .Text}}%') OR
-		ZSEARCHTEXT LIKE utflower('%{{ .Text}}%')
-	)
-GROUP BY
-	ZUNIQUEIDENTIFIER,
-	ZTITLE
-ORDER BY
-	CASE WHEN utflower(ZTITLE) LIKE utflower('%{{ .Text}}%') THEN 0 ELSE 1 END,
-	ZMODIFICATIONDATE DESC
-LIMIT 200
-`
-
-	TAGS_BY_TITLE = `
+    note.ZMODIFICATIONDATE DESC, note.ZUNIQUEIDENTIFIER ASC
+LIMIT %d
+	`, maxSearchResults)
+	TAGS_BY_TITLE = fmt.Sprintf(`
 SELECT
     DISTINCT t.ZTITLE
 FROM
@@ -143,59 +56,23 @@ INNER JOIN
 WHERE
     n.ZARCHIVED = 0
     AND n.ZTRASHED = 0
-    AND UTFLOWER(t.ZTITLE) LIKE UTFLOWER('%%%s%%')
+    AND UTFLOWER(t.ZTITLE) LIKE UTFLOWER('%%'||$1||'%%')
 ORDER BY
-    t.ZMODIFICATIONDATE DESC
-LIMIT 25
+    t.ZMODIFICATIONDATE DESC, t.ZTITLE ASC
+LIMIT %d
 
-`
-
-	NOTE_TITLE_BY_ID = `
-SELECT
-    DISTINCT ZTITLE
-FROM
-    ZSFNOTE
-WHERE
-    ZARCHIVED = 0
-    AND ZTRASHED = 0
-    AND ZUNIQUEIDENTIFIER = '%s'
-ORDER BY
-    ZMODIFICATIONDATE DESC
-LIMIT 25
-`
-	NOTE_TEXT_BY_ID = `
-    SELECT
-    DISTINCT ZTEXT
-FROM
-    ZSFNOTE
-WHERE
-    ZARCHIVED = 0
-    AND ZTRASHED = 0
-    AND ZUNIQUEIDENTIFIER = '%s'
-ORDER BY
-    ZMODIFICATIONDATE DESC
-LIMIT 25
-`
+`, maxSearchResults)
 )
-
-type TagQueryArg struct {
-	Text            string
-	TagIntersection string
-}
-
-func TemplateToString(templateStr string, data any) (string, error) {
-	var buffer bytes.Buffer
-	t := template.Must(template.New("").Parse(templateStr))
-	err := t.Execute(&buffer, data)
-	return buffer.String(), errors.WithStack(err)
-}
 
 type Note map[string]string
 
 func Expanduser(path string) string {
-	usr, _ := user.Current()
+	usr, err := user.Current()
+	if err != nil {
+		return path
+	}
 	dir := usr.HomeDir
-	if path[:2] == "~/" {
+	if strings.HasPrefix(path, "~/") {
 		path = filepath.Join(dir, path[2:])
 	}
 	return path
@@ -205,13 +82,16 @@ type LiteDB struct {
 	db *sql.DB
 }
 
-func NewLiteDB(path string) (LiteDB, error) {
-	sql.Register("sqlite3_custom", &sqlite3.SQLiteDriver{
-		ConnectHook: func(conn *sqlite3.SQLiteConn) error {
-			return conn.RegisterFunc("utflower", utfLower, true)
-		},
-	})
+var registerDriver sync.Once
 
+func NewLiteDB(path string) (LiteDB, error) {
+	registerDriver.Do(func() {
+		sql.Register("sqlite3_custom", &sqlite3.SQLiteDriver{
+			ConnectHook: func(conn *sqlite3.SQLiteConn) error {
+				return conn.RegisterFunc("utflower", utfLower, true)
+			},
+		})
+	})
 	db, err := sql.Open("sqlite3_custom", path)
 	litedb := LiteDB{db}
 	return litedb, err
@@ -223,7 +103,9 @@ func utfLower(s string) string {
 
 func NewBearDB() (LiteDB, error) {
 	path := Expanduser(DbPath)
-	litedb, err := NewLiteDB(path)
+	// Bear owns this database; never create or modify it.
+	uri := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}
+	litedb, err := NewLiteDB(uri.String())
 	return litedb, err
 }
 
@@ -234,18 +116,19 @@ func (litedb LiteDB) Query(q string, args ...interface{}) ([]Note, error) {
 		return results, errors.WithStack(err)
 	}
 
+	defer rows.Close()
 	cols, err := rows.Columns()
 	if err != nil {
 		return results, errors.WithStack(err)
 	}
 
+	columns := make([]interface{}, len(cols))
+	columnPointers := make([]interface{}, len(cols))
+	for i := range columns {
+		columnPointers[i] = &columns[i]
+	}
 	for rows.Next() {
-		m := Note{}
-		columns := make([]interface{}, len(cols))
-		columnPointers := make([]interface{}, len(cols))
-		for i := range columns {
-			columnPointers[i] = &columns[i]
-		}
+		m := make(Note, len(cols))
 		if err := rows.Scan(columnPointers...); err != nil {
 			return results, errors.WithStack(err)
 		}
@@ -271,177 +154,12 @@ func (litedb LiteDB) Query(q string, args ...interface{}) ([]Note, error) {
 	return results, errors.WithStack(err)
 }
 
-func escape(s string) string {
-	return strings.Replace(s, "'", "''", -1)
-}
-
-func containsOrderedWords(text string, words []string) bool {
-	prev := 0
-	for _, w := range words {
-		i := strings.Index(text, w)
-		if i == -1 || i < prev {
-			return false
-		}
-		prev = i
-	}
-	return true
-}
-
-func containsWords(text string, words []string) bool {
-	for _, w := range words {
-		if !strings.Contains(text, w) {
-			return false
-		}
-	}
-	return true
-}
-
-func (litedb LiteDB) queryNotesByTextAndTagConjunction(text, tagIntersection string, tags []string) ([]Note, error) {
-	tagQueryArg := TagQueryArg{
-		Text:            escape(text),
-		TagIntersection: tagIntersection,
-	}
-
-	query, err := TemplateToString(NOTES_BY_TAGS_AND_QUERY, tagQueryArg)
-	if err != nil {
-		return nil, err
-	}
-
-	return litedb.Query(query)
-}
+func (litedb LiteDB) Close() error { return litedb.db.Close() }
 
 func RemoveTagHashes(tag string) string {
-	tag = tag[1:]
+	tag = strings.TrimPrefix(tag, "#")
 	if strings.HasSuffix(tag, "#") {
 		tag = tag[:len(tag)-1]
 	}
 	return tag
-}
-
-func (litedb LiteDB) QueryNotesByTextAndTags(text string, tags []string) ([]Note, error) {
-	var selectStatements []string
-	for _, t := range tags {
-		s := fmt.Sprintf("SELECT ZUNIQUEIDENTIFIER FROM joined WHERE utflower(TAG_TITLE) = utflower('%s')", RemoveTagHashes(t))
-		selectStatements = append(selectStatements, s)
-	}
-	tagIntersection := strings.Join(selectStatements, "\nINTERSECT\n")
-
-	wordQuery := func(word string) ([]Note, error) {
-		return litedb.queryNotesByTextAndTagConjunction(word, tagIntersection, tags)
-	}
-
-	return multiWordQuery(text, wordQuery)
-}
-
-func (litedb LiteDB) QueryNotesByText(text string) ([]Note, error) {
-	wordQuery := func(word string) ([]Note, error) {
-		word = escape(word)
-		return litedb.Query(NOTES_BY_QUERY, word)
-	}
-	return multiWordQuery(text, wordQuery)
-}
-
-func splitSpacesOrQuoted(s string) []string {
-	r := regexp.MustCompile(`([^\s"']+)|"([^"]*)"`)
-	matches := r.FindAllStringSubmatch(s, -1)
-	var split []string
-	for _, v := range matches {
-		match := v[1]
-		if match == "" {
-			match = v[2]
-		}
-		split = append(split, match)
-	}
-	return split
-}
-
-type noteRecord struct {
-	note                 Note
-	contains             bool
-	containsOrderedWords bool
-	containsWords        bool
-	originalIndex        int
-}
-
-func NewNoteRecord(i int, note Note, lowerText string) *noteRecord {
-	title := strings.ToLower(note[TitleKey])
-	words := strings.Split(lowerText, " ")
-	record := noteRecord{
-		originalIndex:        i,
-		note:                 note,
-		contains:             strings.Contains(title, lowerText),
-		containsOrderedWords: containsOrderedWords(title, words),
-		containsWords:        containsWords(title, words),
-	}
-	return &record
-}
-
-func multiWordQuery(text string, wordQuery func(string) ([]Note, error)) ([]Note, error) {
-	lowerText := strings.ToLower(text)
-	words := splitSpacesOrQuoted(lowerText)
-
-	var records []*noteRecord
-	fullMatch := map[string]bool{}
-	notes, err := wordQuery(lowerText)
-	if err != nil {
-		return nil, err
-	}
-	for i, note := range notes {
-		noteId := note[NoteIDKey]
-		record := NewNoteRecord(i, note, lowerText)
-		record.originalIndex = i
-		records = append(records, record)
-		fullMatch[noteId] = true
-	}
-
-	var multiRecords []*noteRecord
-	count := map[string]int{}
-	for _, word := range words {
-		notes, err := wordQuery(word)
-		if err != nil {
-			return nil, err
-		}
-
-		for i, note := range notes {
-			noteId := note[NoteIDKey]
-			if count[noteId] == 0 && !fullMatch[noteId] {
-				record := NewNoteRecord(i, note, lowerText)
-				record.originalIndex = i
-				multiRecords = append(multiRecords, record)
-			}
-			count[noteId]++
-		}
-	}
-
-	for _, record := range multiRecords {
-		if count[record.note[NoteIDKey]] == len(words) || record.containsWords {
-			records = append(records, record)
-		}
-	}
-
-	sort.Slice(records, func(i, j int) bool {
-		iRecord := records[i]
-		jRecord := records[j]
-
-		if iRecord.contains != jRecord.contains {
-			return iRecord.contains
-		}
-
-		if iRecord.containsOrderedWords != jRecord.containsOrderedWords {
-			return iRecord.containsOrderedWords
-		}
-
-		if iRecord.containsWords != jRecord.containsWords {
-			return iRecord.containsWords
-		}
-
-		return iRecord.originalIndex < jRecord.originalIndex
-	})
-
-	var finalRows []Note
-	for _, noteRecord := range records {
-		finalRows = append(finalRows, noteRecord.note)
-	}
-
-	return finalRows, nil
 }
